@@ -38,6 +38,8 @@
 #include "MapDrawer.h"
 #include "System.h"
 
+#include "ImuBasis.h"
+
 #include <mutex>
 
 namespace ORB_SLAM2
@@ -55,12 +57,14 @@ class Tracking
 
 public:
     Tracking(System* pSys, ORBVocabulary* pVoc, FrameDrawer* pFrameDrawer, MapDrawer* pMapDrawer, Map* pMap,
-             KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor);
+             KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor, bool bWithImu=false);
 
     // Preprocess the input and call Track(). Extract features and performs stereo matching.
     cv::Mat GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const double &timestamp);
     cv::Mat GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp);
     cv::Mat GrabImageMonocular(const cv::Mat &im, const double &timestamp);
+
+    void GrabImuData(const ImuPoint &imuMeasurement);
 
     void SetLocalMapper(LocalMapping* pLocalMapper);
     void SetLoopClosing(LoopClosing* pLoopClosing);
@@ -115,6 +119,9 @@ public:
 
     void Reset();
 
+    void GetInitImuPreintegration(ImuPreintegration* &pInitImuPre);
+    double GetInitFrameTimeStamp(){return mInitialFrame.mTimeStamp;};
+
 protected:
 
     // Main tracking function. It is independent of the input sensor.
@@ -143,6 +150,11 @@ protected:
 
     bool NeedNewKeyFrame();
     void CreateNewKeyFrame();
+
+    bool LoadImuCalibration(cv::FileStorage &fSettings);
+
+    void InitPreintegrateIMU();
+
 
     // In case of performing only localization, this flag is true when there are no matches to
     // points in the map. Still tracking will continue if there are enough matches with temporal points.
@@ -209,6 +221,13 @@ protected:
 
     //Motion Model
     cv::Mat mVelocity;
+
+    //Imu
+    mutex mMutexImuQueue, mMutexInitImu;
+    bool mbWithImu;
+    list<ImuPoint> mlImuQueue;
+    ImuCalib *mpImuCalib;
+    ImuPreintegration *mpInitImuPreintegrated;
 
     //Color order (true RGB, false BGR, ignored if grayscale)
     bool mbRGB;

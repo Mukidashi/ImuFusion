@@ -27,6 +27,8 @@
 #include "Tracking.h"
 #include "System.h"
 
+#include "ImuFusion.h"
+
 #include <mutex>
 
 namespace ORB_SLAM2
@@ -56,6 +58,8 @@ public:
 
     void Release();
 
+    void SetImuFusion(ImuFusion *p_fusion);
+
 private:
 
     bool Stop();
@@ -80,6 +84,9 @@ private:
     bool mbStopped;
     bool mbStopRequested;
     std::mutex mMutexStop;
+
+    ImuFusion *mp_fusion;
+    void DrawImuFusionPoses();
 
 };
 

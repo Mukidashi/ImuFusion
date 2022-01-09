@@ -261,4 +261,67 @@ void MapDrawer::GetCurrentOpenGLCameraMatrix(pangolin::OpenGlMatrix &M)
         M.SetIdentity();
 }
 
+
+void MapDrawer::DrawImuFusionPoses(vector<cv::Mat> vCamPoses, vector<cv::Mat> vImuPoses)
+{
+    const float &w = mKeyFrameSize;
+    const float h = w*0.75;
+    const float z = w*0.6;
+
+
+    glLineWidth(mGraphLineWidth);
+    glBegin(GL_LINES);
+    glColor3f(1.0,0.0,0.0);
+    glVertex3f(0,0,0);
+    glVertex3f(1,0,0);
+    glColor3f(0.0,1.0,0.0);
+    glVertex3f(0,0,0);
+    glVertex3f(0,1,0);
+    glColor3f(0.0,0.0,1.0);
+    glVertex3f(0,0,0);
+    glVertex3f(0,0,1);
+    glEnd();
+
+
+    glLineWidth(mCameraLineWidth);
+    glColor3f(1.0f,0.0f,1.0f);
+    glBegin(GL_LINES);
+    for(int i=0;i<vCamPoses.size();++i){
+        cv::Mat cpose = vCamPoses[i];
+
+        float cent[3];
+        for(int j=0;j<3;++j){
+            cent[j] = 0.0;
+            for(int k=0;k<3;++k){
+                cent[j] -= cpose.at<float>(k,j)*cpose.at<float>(k,3);
+            }
+        }
+        float sumi[4][3];
+        for(int j=0;j<3;++j){
+            sumi[0][j] = cent[j] - w*cpose.at<float>(0,j) - h*cpose.at<float>(1,j) + z*cpose.at<float>(2,j);
+            sumi[1][j] = cent[j] + w*cpose.at<float>(0,j) - h*cpose.at<float>(1,j) + z*cpose.at<float>(2,j);
+            sumi[2][j] = cent[j] + w*cpose.at<float>(0,j) + h*cpose.at<float>(1,j) + z*cpose.at<float>(2,j);
+            sumi[3][j] = cent[j] - w*cpose.at<float>(0,j) + h*cpose.at<float>(1,j) + z*cpose.at<float>(2,j);
+        }
+        glVertex3fv(cent);
+        glVertex3fv(sumi[0]);
+        glVertex3fv(cent);
+        glVertex3fv(sumi[1]);
+        glVertex3fv(cent);
+        glVertex3fv(sumi[2]);
+        glVertex3fv(cent);
+        glVertex3fv(sumi[3]);
+
+        glVertex3fv(sumi[0]);
+        glVertex3fv(sumi[1]);
+        glVertex3fv(sumi[1]);
+        glVertex3fv(sumi[2]);
+        glVertex3fv(sumi[2]);
+        glVertex3fv(sumi[3]);
+        glVertex3fv(sumi[3]);
+        glVertex3fv(sumi[0]);
+    }
+    glEnd();
+}
+
 } //namespace ORB_SLAM

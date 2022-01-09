@@ -33,6 +33,8 @@
 #include"Optimizer.h"
 #include"PnPsolver.h"
 
+#include "GeometricFunctions.h"
+
 #include<iostream>
 
 #include<mutex>
@@ -43,10 +45,11 @@ using namespace std;
 namespace ORB_SLAM2
 {
 
-Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Map *pMap, KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor):
+Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Map *pMap,
+      KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor, bool bWithImu):
     mState(NO_IMAGES_YET), mSensor(sensor), mbOnlyTracking(false), mbVO(false), mpORBVocabulary(pVoc),
     mpKeyFrameDB(pKFDB), mpInitializer(static_cast<Initializer*>(NULL)), mpSystem(pSys), mpViewer(NULL),
-    mpFrameDrawer(pFrameDrawer), mpMapDrawer(pMapDrawer), mpMap(pMap), mnLastRelocFrameId(0)
+    mpFrameDrawer(pFrameDrawer), mpMapDrawer(pMapDrawer), mpMap(pMap), mnLastRelocFrameId(0), mbWithImu(bWithImu)
 {
     // Load camera parameters from settings file
 
@@ -146,6 +149,12 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
             mDepthMapFactor = 1.0f/mDepthMapFactor;
     }
 
+    if(mbWithImu){
+        if(!LoadImuCalibration(fSettings)){
+            cout<<"Error with IMU setting file loading"<<endl;
+        }
+    }
+
 }
 
 void Tracking::SetLocalMapper(LocalMapping *pLocalMapper)
@@ -161,6 +170,80 @@ void Tracking::SetLoopClosing(LoopClosing *pLoopClosing)
 void Tracking::SetViewer(Viewer *pViewer)
 {
     mpViewer=pViewer;
+}
+
+
+bool Tracking::LoadImuCalibration(cv::FileStorage &fSettings)
+{
+    bool b_miss_params = false;
+
+    cv::Mat Tbc;
+    cv::FileNode node = fSettings["Tbc"];
+    if(!node.empty()){
+        Tbc = node.mat();
+
+        if(Tbc.rows != 4 || Tbc.cols != 4){
+            b_miss_params = true;
+        }
+    } else {
+        b_miss_params = true;
+    }
+
+    float freq, Ng, Na, Ngw, Naw;
+
+    node = fSettings["IMU.Frequency"];
+    if(!node.empty() && node.isInt()){
+        freq = node.operator int();
+    } else {
+        b_miss_params = true;
+    }
+
+    node = fSettings["IMU.NoiseGyro"];
+    if(!node.empty() && node.isReal()){
+        Ng = node.real();
+    } else { 
+        b_miss_params = true;
+    }
+
+    node = fSettings["IMU.NoiseAcc"];
+    if(!node.empty() && node.isReal()){
+        Na = node.real();
+    } else {
+        b_miss_params = true;
+    }
+
+    node = fSettings["IMU.GyroWalk"];
+    if(!node.empty() && node.isReal()){
+        Ngw = node.real();
+    } else {
+        b_miss_params = true;
+    }
+
+    node = fSettings["IMU.AccWalk"];
+    if(!node.empty() && node.isReal()){
+        Naw = node.real();
+    } else {
+        b_miss_params = true;
+    }
+
+
+    if(b_miss_params){
+        return false;
+    }
+
+    cout<<endl;
+    cout<<"Tbc: "<<endl<<Tbc<<endl;
+    cout<<"IMU freq: "<<freq<<" Hz"<<endl;
+    cout<<"IMU gyro noise: "<<Ng<<" rad/s/sqrt(Hz)"<<endl;
+    cout<<"IMU gyro walk: "<<Ngw<<" rad/s^2/sqrt(Hz)"<<endl;
+    cout<<"IMU acc noise: "<<Na<<" m/s^2/sqrt(Hz)"<<endl;
+    cout<<"IMU acc walk: "<<Naw<<" m/s^3/sqrt(Hz)"<<endl;
+
+    const float sf = sqrt(freq);
+    mpImuCalib = new ImuCalib(Tbc, Ng*sf, Na*sf, Ngw/sf, Naw/sf);
+    mpInitImuPreintegrated = new ImuPreintegration(ImuBias(),*mpImuCalib);
+
+    return true;
 }
 
 
@@ -264,8 +347,22 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
     return mCurrentFrame.mTcw.clone();
 }
 
+
+void Tracking::GrabImuData(const ImuPoint &imuMeasurement)
+{
+    unique_lock<mutex> lock(mMutexImuQueue);
+    mlImuQueue.push_back(imuMeasurement);
+}
+
+
 void Tracking::Track()
 {
+
+    if(mbWithImu && mState == NOT_INITIALIZED){
+        InitPreintegrateIMU();
+    }
+
+
     if(mState==NO_IMAGES_YET)
     {
         mState = NOT_INITIALIZED;
@@ -284,6 +381,8 @@ void Tracking::Track()
             MonocularInitialization();
 
         mpFrameDrawer->Update(this);
+
+        mLastFrame = Frame(mCurrentFrame);
 
         if(mState!=OK)
             return;
@@ -506,6 +605,86 @@ void Tracking::Track()
 }
 
 
+void Tracking::InitPreintegrateIMU()
+{
+    if(mlImuQueue.size() == 0){
+        return;
+    }
+    
+    vector<ImuPoint> vImuFromLastFrame;
+    {
+        unique_lock<mutex> lock(mMutexImuQueue);
+        for(list<ImuPoint>::iterator litr = mlImuQueue.begin(), lend=mlImuQueue.end();litr != lend;){
+            ImuPoint *p_imu = &(*litr);
+            
+            if(p_imu->t < mLastFrame.mTimeStamp - 0.001l){
+                litr = mlImuQueue.erase(litr);
+                continue;
+            } else if(p_imu->t < mCurrentFrame.mTimeStamp - 0.001l){
+                vImuFromLastFrame.push_back(*p_imu);
+                litr = mlImuQueue.erase(litr);
+                continue;
+            } else {
+                vImuFromLastFrame.push_back(*p_imu);
+                break;
+            }
+            litr++;
+        }
+    }
+
+    int imuN = vImuFromLastFrame.size() - 1;
+
+    unique_lock<mutex> lock(mMutexInitImu);
+
+    for(int i=0;i<imuN;++i){
+        float tstep;
+        cv::Point3f acc, angVel;
+
+        if((i == 0) && (imuN > 1)){
+            
+            float t12 = vImuFromLastFrame[i+1].t - vImuFromLastFrame[i].t;
+            float tl1 = mLastFrame.mTimeStamp - vImuFromLastFrame[i].t;
+            float ratio = tl1/t12;
+            acc = (vImuFromLastFrame[i].a + vImuFromLastFrame[i+1].a + (vImuFromLastFrame[i+1].a - vImuFromLastFrame[i].a)*ratio)*0.5f;
+            angVel = (vImuFromLastFrame[i].w + vImuFromLastFrame[i+1].w + (vImuFromLastFrame[i+1].w - vImuFromLastFrame[i].w)*ratio)*0.5f;
+            tstep = vImuFromLastFrame[i+1].t - mLastFrame.mTimeStamp;
+
+        } else if(i < imuN - 1){
+
+            acc = (vImuFromLastFrame[i].a + vImuFromLastFrame[i+1].a)*0.5f;
+            angVel = (vImuFromLastFrame[i].w + vImuFromLastFrame[i+1].w)*0.5;
+            tstep = vImuFromLastFrame[i+1].t - vImuFromLastFrame[i].t;
+        
+        } else if(i > 0 && i == imuN -1){
+
+            float t12 = vImuFromLastFrame[i+1].t - vImuFromLastFrame[i].t;
+            float tl2 = mCurrentFrame.mTimeStamp - vImuFromLastFrame[i+1].t;
+            float ratio = tl2/t12;
+            acc = (vImuFromLastFrame[i].a + vImuFromLastFrame[i+1].a + (vImuFromLastFrame[i+1].a-vImuFromLastFrame[i].a)*ratio)*0.5f;
+            angVel = (vImuFromLastFrame[i].w + vImuFromLastFrame[i+1].w + (vImuFromLastFrame[i+1].w-vImuFromLastFrame[i].w)*ratio)*0.5f;
+            tstep = mCurrentFrame.mTimeStamp - vImuFromLastFrame[i].t;
+
+        } else if((i == 0) && (imuN == 1)){
+
+            acc = vImuFromLastFrame[i].a;
+            angVel = vImuFromLastFrame[i].w;
+            tstep = mCurrentFrame.mTimeStamp - mLastFrame.mTimeStamp;
+
+        }
+        
+        mpInitImuPreintegrated->Integrate(acc,angVel,tstep);
+    }
+    
+}
+
+
+void Tracking::GetInitImuPreintegration(ImuPreintegration* &pImuPre)
+{
+    unique_lock<mutex> lock(mMutexInitImu);
+    pImuPre = new ImuPreintegration(mpInitImuPreintegrated);
+}
+
+
 void Tracking::StereoInitialization()
 {
     if(mCurrentFrame.N>500)
@@ -560,6 +739,7 @@ void Tracking::StereoInitialization()
     }
 }
 
+
 void Tracking::MonocularInitialization()
 {
 
@@ -580,6 +760,14 @@ void Tracking::MonocularInitialization()
             mpInitializer =  new Initializer(mCurrentFrame,1.0,200);
 
             fill(mvIniMatches.begin(),mvIniMatches.end(),-1);
+
+            unique_lock<mutex> lock(mMutexInitImu);
+            if(mbWithImu){
+                if(mpInitImuPreintegrated){
+                    delete mpInitImuPreintegrated;
+                }
+                mpInitImuPreintegrated = new ImuPreintegration(ImuBias(),*mpImuCalib);
+            }
 
             return;
         }

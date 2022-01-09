@@ -28,7 +28,7 @@ namespace ORB_SLAM2
 
 Viewer::Viewer(System* pSystem, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Tracking *pTracking, const string &strSettingPath):
     mpSystem(pSystem), mpFrameDrawer(pFrameDrawer),mpMapDrawer(pMapDrawer), mpTracker(pTracking),
-    mbFinishRequested(false), mbFinished(true), mbStopped(true), mbStopRequested(false)
+    mbFinishRequested(false), mbFinished(true), mbStopped(true), mbStopRequested(false), mp_fusion(NULL)
 {
     cv::FileStorage fSettings(strSettingPath, cv::FileStorage::READ);
 
@@ -50,6 +50,7 @@ Viewer::Viewer(System* pSystem, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer
     mViewpointZ = fSettings["Viewer.ViewpointZ"];
     mViewpointF = fSettings["Viewer.ViewpointF"];
 }
+
 
 void Viewer::Run()
 {
@@ -132,6 +133,11 @@ void Viewer::Run()
         if(menuShowPoints)
             mpMapDrawer->DrawMapPoints();
 
+
+        if(mp_fusion){
+            DrawImuFusionPoses();
+        }
+
         pangolin::FinishFrame();
 
         cv::Mat im = mpFrameDrawer->DrawFrame();
@@ -168,11 +174,13 @@ void Viewer::Run()
     SetFinish();
 }
 
+
 void Viewer::RequestFinish()
 {
     unique_lock<mutex> lock(mMutexFinish);
     mbFinishRequested = true;
 }
+
 
 bool Viewer::CheckFinish()
 {
@@ -180,17 +188,20 @@ bool Viewer::CheckFinish()
     return mbFinishRequested;
 }
 
+
 void Viewer::SetFinish()
 {
     unique_lock<mutex> lock(mMutexFinish);
     mbFinished = true;
 }
 
+
 bool Viewer::isFinished()
 {
     unique_lock<mutex> lock(mMutexFinish);
     return mbFinished;
 }
+
 
 void Viewer::RequestStop()
 {
@@ -199,11 +210,13 @@ void Viewer::RequestStop()
         mbStopRequested = true;
 }
 
+
 bool Viewer::isStopped()
 {
     unique_lock<mutex> lock(mMutexStop);
     return mbStopped;
 }
+
 
 bool Viewer::Stop()
 {
@@ -223,10 +236,27 @@ bool Viewer::Stop()
 
 }
 
+
 void Viewer::Release()
 {
     unique_lock<mutex> lock(mMutexStop);
     mbStopped = false;
 }
 
+
+void Viewer::SetImuFusion(ImuFusion *p_fusion)
+{
+    mp_fusion = p_fusion;
+}
+
+
+void Viewer::DrawImuFusionPoses()
+{
+    vector<cv::Mat> vCamPoses;
+    vector<cv::Mat> vImuPoses;
+
+    mp_fusion->GetImuFusionPoses(vCamPoses, vImuPoses);
+    mpMapDrawer->DrawImuFusionPoses(vCamPoses, vImuPoses);
+    
+}
 }

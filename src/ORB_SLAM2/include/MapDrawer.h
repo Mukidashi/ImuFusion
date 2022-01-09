@@ -45,6 +45,8 @@ public:
     void SetReferenceKeyFrame(KeyFrame *pKF);
     void GetCurrentOpenGLCameraMatrix(pangolin::OpenGlMatrix &M);
 
+    void DrawImuFusionPoses(vector<cv::Mat> vCamPoses, vector<cv::Mat> vImuPoses);
+
 private:
 
     float mKeyFrameSize;
